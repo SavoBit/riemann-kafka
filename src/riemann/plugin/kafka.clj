@@ -4,32 +4,27 @@
            kafka.consumer.KafkaStream
            kafka.producer.KeyedMessage)
   (:require [riemann.core          :refer [stream!]]
-            [riemann.common        :refer [decode-msg encode]]
+            [riemann.common        :refer [decode-msg encode event-to-json]]
             [clj-kafka.core        :refer [to-clojure]]
             [clj-kafka.consumer.zk :refer [consumer]]
-            [clj-kafka.producer    :refer [send-message producer]]
+            [clj-kafka.producer    :refer [send-message producer message]]
             [riemann.service       :refer [Service ServiceEquiv]]
             [riemann.config        :refer [service!]]
             [clojure.tools.logging :refer [debug info error]]))
 
-(defn protobuf-decoder
-  "Decode protobuf object to riemann events"
-  [value]
-  (:events (decode-msg (Proto$Msg/parseFrom value))))
-
 (defn safe-decode
   "Do not let a bad payload break our consumption"
-  [decoder input]
+  [input]
   (try
     (let [{:keys [value]} (to-clojure input)]
-      (decoder value))
+      (decode-msg (Proto$Msg/parseFrom value)))
     (catch Exception e
-      (error e "could not decode msg"))))
+      (error e "could not decode protobuf msg"))))
 
 (defn stringify
   "Prepare a map to be converted to properties"
   [props]
-  (let [input (dissoc props :topic :decoder :encoder)
+  (let [input (dissoc props :topic)
         skeys (map (juxt (comp name key) val) input)]
     (reduce merge {} skeys)))
 
@@ -43,10 +38,9 @@
       (try
         (let [stream-map   (.createMessageStreams inq {topic (int 1)})
               [stream & _] (get stream-map topic)
-              msg-seq      (iterator-seq (.iterator ^KafkaStream stream))
-              decoder      (or (:decoder config) protobuf-decoder)]
+              msg-seq      (iterator-seq (.iterator ^KafkaStream stream))]
           (doseq [msg msg-seq :while @running? :when @core]
-            (doseq [event (safe-decode decoder msg)]
+            (doseq [event (:events (safe-decode msg))]
               (debug "got input event: " event)
               (stream! @core event))
             (.commitOffsets inq))
@@ -92,6 +86,6 @@
   [{:keys [topic] :as config}]
   (let [p (producer (stringify config))]
     (fn [event]
-      (let [events (if (sequential? event) event [event])
-            encoder (or (:encoder config) encode)]
-        (send-message p (KeyedMessage. topic (encoder events)))))))
+      (let [events (if (sequential? event) event [event])]
+        (doseq [e events]
+          (send-message p (message topic (.getBytes (event-to-json e)))))))))
