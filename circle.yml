@@ -28,7 +28,9 @@ deployment:
       # Set up for pushing assets to github releases
       - go get github.com/aktau/github-release
       - git config --global user.email "circleci@mist.com"; git config --global user.name "CircleCI User"; git config --global push.default simple
-
+      
+      # Bump version
+      - mist-ci/ci_tagging.sh $version_file
       - lein uberjar
 
       # Push to S3 releases
